@@ -14,6 +14,7 @@ CORS(app)
 API_KEY = "80f0408f19msh84c47582323e83dp19f0e5jsn12964d13628d"
 API_HOST = "api-8be0.onrender.com"
 
+# As chaves aqui (email, password, etc) devem ser IGUAIS aos argumentos do __init__
 EMAIL_CONFIG = {
     "email": "samuelfdsafdsaf4safadsfsdafasd@gmail.com",
     "password": "wkbsannbvnyqhhmf",
@@ -32,7 +33,7 @@ def require_api_key(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# --- CLASSE IMAP COMPLETA ---
+# --- CLASSE IMAP ---
 class EmailIMAPAPI:
     def __init__(self, email, password, imap_server, imap_port):
         self.email_addr = email
@@ -120,10 +121,14 @@ class EmailIMAPAPI:
             return {"success": True, "body": body}
         except Exception as e: return {"success": False, "error": str(e)}
 
-# Instância única
+# Inicialização segura
 api = EmailIMAPAPI(**EMAIL_CONFIG)
 
-# --- ENDPOINTS ---
+# --- ROTAS (ENDPOINTS) ---
+
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({"status": "Online", "service": "Rockstar API Email"})
 
 @app.route('/generate-email', methods=['POST'])
 @require_api_key
@@ -138,30 +143,30 @@ def generate():
 
 @app.route('/inbox', methods=['POST'])
 @require_api_key
-def get_inbox():
-    data = request.get_json()
+def get_inbox_route():
+    data = request.get_json() or {}
     token = data.get('token')
-    if not token: return jsonify({"error": "Token obrigatorio"}), 400
+    if not token: return jsonify({"error": "Token obrigatorio no JSON body"}), 400
     return jsonify(api.get_token_inbox(token))
 
 @app.route('/message', methods=['GET'])
 @require_api_key
-def get_msg():
+def get_msg_route():
     m_id = request.args.get('id')
-    if not m_id: return jsonify({"error": "ID obrigatorio"}), 400
+    if not m_id: return jsonify({"error": "ID obrigatorio na query string"}), 400
     return jsonify(api.get_message_body(m_id))
 
 @app.route('/ids/latest', methods=['GET'])
 @require_api_key
-def latest():
+def latest_route():
     res = api.get_ids()
     if res["success"] and res["ids"]:
         return jsonify({"success": True, "latest_id": res["ids"][0]})
-    return jsonify({"success": False, "error": "Vazio"}), 404
+    return jsonify({"success": False, "error": "Nenhum email encontrado"}), 404
 
 @app.route('/folders', methods=['GET'])
 @require_api_key
-def folders():
+def folders_route():
     mail, err = api.connect()
     if err: return jsonify({"error": err}), 500
     _, folder_list = mail.list()
@@ -169,6 +174,6 @@ def folders():
     return jsonify({"success": True, "folders": [f.decode() for f in folder_list]})
 
 if __name__ == '__main__':
-    # Porta padrão para o Render é 10000 ou definida pela env PORT
+    # Render usa a porta 10000 por padrão ou a definida em PORT
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
