@@ -8,6 +8,34 @@ import os
 app = Flask(__name__)
 CORS(app)  # Permite acesso de qualquer origem
 
+# API KEY para autenticação
+API_KEY = "80f0408f19msh84c47582323e83dp19f0e5jsn12964d13628d"
+API_HOST = "api-8be0.onrender.com"
+
+def require_api_key(f):
+    """Decorator para verificar API Key (estilo RapidAPI)"""
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Verifica headers estilo RapidAPI
+        provided_key = request.headers.get('x-rapidapi-key')
+        provided_host = request.headers.get('x-rapidapi-host')
+        
+        if not provided_key or not provided_host:
+            return jsonify({
+                "success": False,
+                "error": "Headers obrigatórios: x-rapidapi-key e x-rapidapi-host"
+            }), 401
+        
+        if provided_key != API_KEY or provided_host != API_HOST:
+            return jsonify({
+                "success": False,
+                "error": "API Key ou Host inválido"
+            }), 403
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
 class EmailIMAPAPI:
     """API para acessar emails via IMAP"""
     
@@ -160,14 +188,53 @@ def home():
         "message": "API de Email via IMAP",
         "endpoints": {
             "GET /inbox": "Lista emails da inbox",
+            "GET /all": "Lista todos os emails com conteúdo completo",
             "GET /message?id=X": "Lê email específico",
             "GET /delete?id=X": "Deleta email"
         },
         "examples": {
             "inbox": f"{request.host_url}inbox",
+            "all": f"{request.host_url}all",
             "message": f"{request.host_url}message?id=1",
             "delete": f"{request.host_url}delete?id=1"
         }
+    }), 200
+
+@app.route('/all', methods=['GET'])
+def get_all():
+    """Retorna todos os emails com conteúdo completo"""
+    # Primeiro pega a lista de emails
+    inbox_result = email_api.get_inbox()
+    
+    if not inbox_result.get("success"):
+        return jsonify(inbox_result), 500
+    
+    emails = inbox_result.get("data", [])
+    full_emails = []
+    
+    # Para cada email, busca o conteúdo completo
+    for email_info in emails:
+        msg_id = email_info.get("id")
+        if msg_id:
+            message_result = email_api.get_message(msg_id)
+            if message_result.get("success"):
+                full_emails.append({
+                    "id": msg_id,
+                    "preview": email_info,
+                    "full": message_result.get("data")
+                })
+            else:
+                full_emails.append({
+                    "id": msg_id,
+                    "preview": email_info,
+                    "full": None,
+                    "error": message_result.get("error")
+                })
+    
+    return jsonify({
+        "success": True,
+        "total": len(full_emails),
+        "emails": full_emails
     }), 200
 
 @app.route('/inbox', methods=['GET'])
@@ -178,6 +245,7 @@ def inbox():
     return jsonify(result), status
 
 @app.route('/message', methods=['GET'])
+@require_api_key
 def message():
     """Lê uma mensagem específica"""
     message_id = request.args.get('id')
@@ -189,6 +257,7 @@ def message():
     return jsonify(result), status
 
 @app.route('/delete', methods=['GET'])
+@require_api_key
 def delete():
     """Deleta uma mensagem"""
     message_id = request.args.get('id')
