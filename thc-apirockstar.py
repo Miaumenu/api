@@ -11,11 +11,9 @@ app = Flask(__name__)
 CORS(app)
 
 # --- CONFIGURAÇÕES ---
-# Mantenha suas chaves aqui
 API_KEY = "80f0408f19msh84c47582323e83dp19f0e5jsn12964d13628d"
 API_HOST = "api-8be0.onrender.com"
 
-# Credenciais do Gmail
 EMAIL_CONFIG = {
     "email": "samuelfdsafdsaf4safadsfsdafasd@gmail.com",
     "password": "wkbsannbvnyqhhmf",
@@ -27,26 +25,17 @@ EMAIL_CONFIG = {
 def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Para facilitar testes locais, se não tiver header, verifica se é localhost
-        # Mas para produção, exige os headers
-        provided_key = request.headers.get('x-rapidapi-key')
-        provided_host = request.headers.get('x-rapidapi-host')
-        
-        if not provided_key or not provided_host:
-            return jsonify({"success": False, "error": "Headers obrigatórios ausentes"}), 401
-        
-        if provided_key != API_KEY or provided_host != API_HOST:
+        p_key = request.headers.get('x-rapidapi-key')
+        p_host = request.headers.get('x-rapidapi-host')
+        if p_key != API_KEY or p_host != API_HOST:
             return jsonify({"success": False, "error": "Credenciais inválidas"}), 403
-        
         return f(*args, **kwargs)
     return decorated_function
 
-# --- CLASSE IMAP ---
+# --- CLASSE IMAP COMPLETA ---
 class EmailIMAPAPI:
-    # CORREÇÃO DO ERRO DE DEPLOY AQUI:
-    # Os nomes dos argumentos devem bater com as chaves do EMAIL_CONFIG
     def __init__(self, email, password, imap_server, imap_port):
-        self.email_addr = email  # Armazena internamente
+        self.email_addr = email
         self.password = password
         self.server = imap_server
         self.port = imap_port
@@ -62,154 +51,124 @@ class EmailIMAPAPI:
     def _decode_text(self, text):
         if not text: return ""
         try:
-            decoded_list = decode_header(text)
-            decoded_text = ""
-            for content, encoding in decoded_list:
+            decoded = decode_header(text)
+            parts = []
+            for content, charset in decoded:
                 if isinstance(content, bytes):
-                    decoded_text += content.decode(encoding or "utf-8", errors="ignore")
+                    parts.append(content.decode(charset or "utf-8", errors="ignore"))
                 else:
-                    decoded_text += str(content)
-            return decoded_text
-        except:
-            return str(text)
+                    parts.append(str(content))
+            return "".join(parts)
+        except: return str(text)
 
-    def generate_temp_email(self):
-        """Gera um email com alias (+token)"""
-        # Gera token curto de 8 caracteres
-        token = str(uuid.uuid4())[:8]
-        
-        # Separa usuario e dominio
-        if '@' in self.email_addr:
-            user_part, domain_part = self.email_addr.split('@')
-            # Cria: usuario+token@gmail.com
-            generated_email = f"{user_part}+{token}@{domain_part}"
-        else:
-            return {"success": False, "error": "Email configurado inválido"}
-        
-        return {
-            "success": True,
-            "email": generated_email,
-            "token": token  # O usuário precisa guardar esse token para ler a inbox
-        }
+    def get_ids(self, folder="inbox", order="desc"):
+        mail, error = self.connect()
+        if error: return {"success": False, "error": error}
+        try:
+            mail.select(f'"{folder}"')
+            _, messages = mail.search(None, "ALL")
+            ids = [i.decode() for i in messages[0].split()]
+            if order == "desc": ids.reverse()
+            mail.close()
+            mail.logout()
+            return {"success": True, "ids": ids}
+        except Exception as e: return {"success": False, "error": str(e)}
 
     def get_token_inbox(self, token):
-        """Busca emails enviados especificamente para o alias do token"""
         mail, error = self.connect()
         if error: return {"success": False, "error": error}
-        
         try:
             mail.select('"inbox"')
+            user, domain = self.email_addr.split('@')
+            target = f"{user}+{token}@{domain}"
+            _, messages = mail.search(None, f'(TO "{target}")')
+            ids = [i.decode() for i in messages[0].split()]
+            ids.reverse()
             
-            # Reconstrói o email alvo
-            user_part, domain_part = self.email_addr.split('@')
-            target_email = f"{user_part}+{token}@{domain_part}"
-            
-            # Busca no IMAP: TO "email+token@gmail.com"
-            search_criterion = f'(TO "{target_email}")'
-            status, messages = mail.search(None, search_criterion)
-            
-            if status != "OK":
-                return {"success": False, "error": "Erro na busca"}
-
-            email_ids = messages[0].split()
-            email_ids.reverse() # Mais recentes primeiro
-            
-            results = []
-            # Limite de 10 emails para não travar
-            for e_id in email_ids[:10]:
-                _, msg_data = mail.fetch(e_id, "(RFC822)")
-                msg = email.message_from_bytes(msg_data[0][1])
-                
-                # Extrai corpo simples
-                body = "Conteúdo complexo/HTML"
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        if part.get_content_type() == "text/plain":
-                            body = part.get_payload(decode=True).decode(errors="ignore")
-                            break
-                else:
-                    body = msg.get_payload(decode=True).decode(errors="ignore")
-
-                results.append({
-                    "id": e_id.decode(),
-                    "to": target_email,
-                    "from": self._decode_text(msg.get("From")),
-                    "subject": self._decode_text(msg.get("Subject")),
-                    "date": msg.get("Date"),
-                    "body_preview": body[:100] # Preview de 100 chars
+            emails = []
+            for e_id in ids[:10]:
+                _, data = mail.fetch(e_id, "(RFC822)")
+                msg = email.message_from_bytes(data[0][1])
+                emails.append({
+                    "id": e_id,
+                    "from": self._decode_text(msg["From"]),
+                    "subject": self._decode_text(msg["Subject"]),
+                    "date": msg["Date"]
                 })
-            
             mail.close()
             mail.logout()
-            
-            return {
-                "success": True,
-                "token": token,
-                "email_used": target_email,
-                "count": len(results),
-                "emails": results
-            }
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": True, "token": token, "emails": emails}
+        except Exception as e: return {"success": False, "error": str(e)}
 
-    # Deletar tudo (Cuidado)
-    def delete_all(self, folder="inbox"):
+    def get_message_body(self, m_id):
         mail, error = self.connect()
         if error: return {"success": False, "error": error}
         try:
-            mail.select(folder)
-            status, messages = mail.search(None, "ALL")
-            email_ids = messages[0].split()
-            for e_id in email_ids:
-                mail.store(e_id, '+FLAGS', '\\Deleted')
-            mail.expunge()
+            mail.select('"inbox"')
+            _, data = mail.fetch(m_id, "(RFC822)")
+            msg = email.message_from_bytes(data[0][1])
+            body = ""
+            if msg.is_multipart():
+                for part in msg.walk():
+                    if part.get_content_type() == "text/plain":
+                        body = part.get_payload(decode=True).decode(errors="ignore")
+                        break
+            else:
+                body = msg.get_payload(decode=True).decode(errors="ignore")
             mail.close()
             mail.logout()
-            return {"success": True, "message": f"Limpou {len(email_ids)} emails"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": True, "body": body}
+        except Exception as e: return {"success": False, "error": str(e)}
 
-# Inicializa a API com a correção do **kwargs
+# Instância única
 api = EmailIMAPAPI(**EMAIL_CONFIG)
 
-# --- ROTAS ---
+# --- ENDPOINTS ---
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({"status": "Online", "msg": "API Rockstar Email"})
-
-# 1. Gerar Email Temporário
 @app.route('/generate-email', methods=['POST'])
 @require_api_key
-def generate_email_route():
-    """Retorna { email: 'user+token@gmail.com', token: 'token' }"""
-    return jsonify(api.generate_temp_email())
+def generate():
+    token = str(uuid.uuid4())[:8]
+    user, domain = EMAIL_CONFIG["email"].split('@')
+    return jsonify({
+        "success": True,
+        "email": f"{user}+{token}@{domain}",
+        "token": token
+    })
 
-# 2. Ler Inbox do Token
 @app.route('/inbox', methods=['POST'])
 @require_api_key
-def inbox_token_route():
-    """Recebe JSON { token: '...' } e retorna emails desse token"""
+def get_inbox():
     data = request.get_json()
-    
-    # Suporte para receber tanto 'token' quanto 'email' (extraindo token)
     token = data.get('token')
-    
-    if not token:
-        return jsonify({"success": False, "error": "Envie o 'token' gerado no /generate-email"}), 400
-        
+    if not token: return jsonify({"error": "Token obrigatorio"}), 400
     return jsonify(api.get_token_inbox(token))
 
-# 3. Deletar Tudo
-@app.route('/delete-all', methods=['DELETE'])
+@app.route('/message', methods=['GET'])
 @require_api_key
-def delete_all_route():
-    if request.args.get('confirm') != "true":
-        return jsonify({"error": "Confirme com ?confirm=true"}), 400
-    return jsonify(api.delete_all())
+def get_msg():
+    m_id = request.args.get('id')
+    if not m_id: return jsonify({"error": "ID obrigatorio"}), 400
+    return jsonify(api.get_message_body(m_id))
+
+@app.route('/ids/latest', methods=['GET'])
+@require_api_key
+def latest():
+    res = api.get_ids()
+    if res["success"] and res["ids"]:
+        return jsonify({"success": True, "latest_id": res["ids"][0]})
+    return jsonify({"success": False, "error": "Vazio"}), 404
+
+@app.route('/folders', methods=['GET'])
+@require_api_key
+def folders():
+    mail, err = api.connect()
+    if err: return jsonify({"error": err}), 500
+    _, folder_list = mail.list()
+    mail.logout()
+    return jsonify({"success": True, "folders": [f.decode() for f in folder_list]})
 
 if __name__ == '__main__':
-    # Render fornece a porta na variável de ambiente PORT
+    # Porta padrão para o Render é 10000 ou definida pela env PORT
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
