@@ -4,7 +4,7 @@ import imaplib
 import email
 from email.header import decode_header
 import os
-import uuid
+import random
 from functools import wraps
 
 app = Flask(__name__)
@@ -14,7 +14,6 @@ CORS(app)
 API_KEY = "80f0408f19msh84c47582323e83dp19f0e5jsn12964d13628d"
 API_HOST = "api-8be0.onrender.com"
 
-# As chaves aqui (email, password, etc) devem ser IGUAIS aos argumentos do __init__
 EMAIL_CONFIG = {
     "email": "samuelfdsafdsaf4safadsfsdafasd@gmail.com",
     "password": "wkbsannbvnyqhhmf",
@@ -22,18 +21,15 @@ EMAIL_CONFIG = {
     "imap_port": 993
 }
 
-# --- DECORATOR DE SEGURANÇA ---
 def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        p_key = request.headers.get('x-rapidapi-key')
-        p_host = request.headers.get('x-rapidapi-host')
-        if p_key != API_KEY or p_host != API_HOST:
+        if request.headers.get('x-rapidapi-key') != API_KEY or \
+           request.headers.get('x-rapidapi-host') != API_HOST:
             return jsonify({"success": False, "error": "Credenciais inválidas"}), 403
         return f(*args, **kwargs)
     return decorated_function
 
-# --- CLASSE IMAP ---
 class EmailIMAPAPI:
     def __init__(self, email, password, imap_server, imap_port):
         self.email_addr = email
@@ -62,118 +58,127 @@ class EmailIMAPAPI:
             return "".join(parts)
         except: return str(text)
 
-    def get_ids(self, folder="inbox", order="desc"):
-        mail, error = self.connect()
-        if error: return {"success": False, "error": error}
-        try:
-            mail.select(f'"{folder}"')
-            _, messages = mail.search(None, "ALL")
-            ids = [i.decode() for i in messages[0].split()]
-            if order == "desc": ids.reverse()
-            mail.close()
-            mail.logout()
-            return {"success": True, "ids": ids}
-        except Exception as e: return {"success": False, "error": str(e)}
+    def generate_dotted_email(self):
+        """Gera um email inserindo pontos aleatórios no nome de usuário"""
+        user, domain = self.email_addr.split('@')
+        user_list = list(user)
+        
+        # Define quantos pontos inserir (entre 1 e 5 para não ficar gigante)
+        num_dots = random.randint(1, 5)
+        # Escolhe posições aleatórias (não pode ser na primeira ou última posição)
+        possible_positions = list(range(1, len(user_list)))
+        dot_positions = random.sample(possible_positions, min(num_dots, len(possible_positions)))
+        
+        # Insere os pontos de trás para frente para não alterar os índices
+        for pos in sorted(dot_positions, reverse=True):
+            user_list.insert(pos, '.')
+            
+        dotted_user = "".join(user_list)
+        return f"{dotted_user}@{domain}"
 
-    def get_token_inbox(self, token):
+    def get_token_inbox(self, target_email):
+        """Busca emails e filtra EXATAMENTE pelo padrão de pontos"""
         mail, error = self.connect()
         if error: return {"success": False, "error": error}
+        
         try:
             mail.select('"inbox"')
-            user, domain = self.email_addr.split('@')
-            target = f"{user}+{token}@{domain}"
-            _, messages = mail.search(None, f'(TO "{target}")')
+            # O Gmail trata pontos como iguais no SEARCH, então buscamos todos do usuário base
+            # e filtramos manualmente no Python o cabeçalho 'To'
+            _, messages = mail.search(None, 'ALL')
             ids = [i.decode() for i in messages[0].split()]
-            ids.reverse()
+            ids.reverse() # Mais recentes primeiro
             
             emails = []
-            for e_id in ids[:10]:
+            # Verifica os últimos 30 emails para encontrar os que batem com o padrão de pontos
+            for e_id in ids[:30]:
                 _, data = mail.fetch(e_id, "(RFC822)")
                 msg = email.message_from_bytes(data[0][1])
-                emails.append({
-                    "id": e_id,
-                    "from": self._decode_text(msg["From"]),
-                    "subject": self._decode_text(msg["Subject"]),
-                    "date": msg["Date"]
-                })
+                
+                # Pega o destinatário real do cabeçalho
+                to_header = msg.get("To", "").lower()
+                
+                # Filtro rigoroso: só entra se o email com pontos bater exatamente
+                if target_email.lower() in to_header:
+                    emails.append({
+                        "id": e_id,
+                        "from": self._decode_text(msg["From"]),
+                        "subject": self._decode_text(msg["Subject"]),
+                        "date": msg["Date"]
+                    })
+            
             mail.close()
             mail.logout()
-            return {"success": True, "token": token, "emails": emails}
+            return {"success": True, "target": target_email, "count": len(emails), "emails": emails}
         except Exception as e: return {"success": False, "error": str(e)}
 
-    def get_message_body(self, m_id):
-        mail, error = self.connect()
-        if error: return {"success": False, "error": error}
-        try:
-            mail.select('"inbox"')
-            _, data = mail.fetch(m_id, "(RFC822)")
-            msg = email.message_from_bytes(data[0][1])
-            body = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() == "text/plain":
-                        body = part.get_payload(decode=True).decode(errors="ignore")
-                        break
-            else:
-                body = msg.get_payload(decode=True).decode(errors="ignore")
-            mail.close()
-            mail.logout()
-            return {"success": True, "body": body}
-        except Exception as e: return {"success": False, "error": str(e)}
-
-# Inicialização segura
+# Inicialização
 api = EmailIMAPAPI(**EMAIL_CONFIG)
 
-# --- ROTAS (ENDPOINTS) ---
+# --- ROTAS ---
 
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({"status": "Online", "service": "Rockstar API Email"})
+    return jsonify({"status": "Online", "mode": "Dot Aliasing"})
 
 @app.route('/generate-email', methods=['POST'])
 @require_api_key
 def generate():
-    token = str(uuid.uuid4())[:8]
-    user, domain = EMAIL_CONFIG["email"].split('@')
+    """Gera um email com pontos aleatórios"""
+    email_addr = api.generate_dotted_email()
     return jsonify({
         "success": True,
-        "email": f"{user}+{token}@{domain}",
-        "token": token
+        "email": email_addr,
+        "token": email_addr # No sistema de pontos, o próprio email é o token
     })
 
 @app.route('/inbox', methods=['POST'])
 @require_api_key
 def get_inbox_route():
+    """Busca emails que foram enviados para o endereço com pontos específicos"""
     data = request.get_json() or {}
-    token = data.get('token')
-    if not token: return jsonify({"error": "Token obrigatorio no JSON body"}), 400
+    token = data.get('token') # Aqui o token é o email completo gerado
+    if not token: return jsonify({"error": "Envie o 'token' (email gerado)"}), 400
     return jsonify(api.get_token_inbox(token))
 
 @app.route('/message', methods=['GET'])
 @require_api_key
 def get_msg_route():
     m_id = request.args.get('id')
-    if not m_id: return jsonify({"error": "ID obrigatorio na query string"}), 400
-    return jsonify(api.get_message_body(m_id))
+    if not m_id: return jsonify({"error": "ID obrigatorio"}), 400
+    res = api.connect()
+    if res[1]: return jsonify({"error": res[1]}), 500
+    
+    mail = res[0]
+    mail.select('"inbox"')
+    _, data = mail.fetch(m_id, "(RFC822)")
+    msg = email.message_from_bytes(data[0][1])
+    
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                body = part.get_payload(decode=True).decode(errors="ignore")
+                break
+    else:
+        body = msg.get_payload(decode=True).decode(errors="ignore")
+    
+    mail.close()
+    mail.logout()
+    return jsonify({"success": True, "body": body})
 
 @app.route('/ids/latest', methods=['GET'])
 @require_api_key
 def latest_route():
-    res = api.get_ids()
-    if res["success"] and res["ids"]:
-        return jsonify({"success": True, "latest_id": res["ids"][0]})
-    return jsonify({"success": False, "error": "Nenhum email encontrado"}), 404
-
-@app.route('/folders', methods=['GET'])
-@require_api_key
-def folders_route():
     mail, err = api.connect()
     if err: return jsonify({"error": err}), 500
-    _, folder_list = mail.list()
+    mail.select('"inbox"')
+    _, messages = mail.search(None, "ALL")
+    ids = messages[0].split()
+    latest_id = ids[-1].decode() if ids else None
     mail.logout()
-    return jsonify({"success": True, "folders": [f.decode() for f in folder_list]})
+    return jsonify({"success": True, "latest_id": latest_id})
 
 if __name__ == '__main__':
-    # Render usa a porta 10000 por padrão ou a definida em PORT
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
