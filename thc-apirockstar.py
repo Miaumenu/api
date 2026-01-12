@@ -4,168 +4,16 @@ import imaplib
 import email
 from email.header import decode_header
 import os
+from functools import wraps
 
 app = Flask(__name__)
-CORS(app)  # Permite acesso de qualquer origem
+CORS(app)  # Permite acesso cross-origin
 
-# API KEY para autenticação
+# --- CONFIGURAÇÕES E CONSTANTES ---
 API_KEY = "80f0408f19msh84c47582323e83dp19f0e5jsn12964d13628d"
 API_HOST = "api-8be0.onrender.com"
 
-def require_api_key(f):
-    """Decorator para verificar API Key (estilo RapidAPI)"""
-    from functools import wraps
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        # Verifica headers estilo RapidAPI
-        provided_key = request.headers.get('x-rapidapi-key')
-        provided_host = request.headers.get('x-rapidapi-host')
-        
-        if not provided_key or not provided_host:
-            return jsonify({
-                "success": False,
-                "error": "Headers obrigatórios: x-rapidapi-key e x-rapidapi-host"
-            }), 401
-        
-        if provided_key != API_KEY or provided_host != API_HOST:
-            return jsonify({
-                "success": False,
-                "error": "API Key ou Host inválido"
-            }), 403
-        
-        return f(*args, **kwargs)
-    return decorated_function
-
-class EmailIMAPAPI:
-    """API para acessar emails via IMAP"""
-    
-    def __init__(self, email_address, password, imap_server="imap.gmail.com", imap_port=993):
-        self.email_address = email_address
-        self.password = password
-        self.imap_server = imap_server
-        self.imap_port = imap_port
-    
-    def connect(self):
-        """Conecta ao servidor IMAP"""
-        try:
-            mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
-            mail.login(self.email_address, self.password)
-            return mail, None
-        except Exception as e:
-            return None, str(e)
-    
-    def get_inbox(self):
-        """Lista mensagens da inbox"""
-        mail, error = self.connect()
-        if error:
-            return {"success": False, "error": f"Falha na conexão: {error}"}
-        
-        try:
-            mail.select("inbox")
-            status, messages = mail.search(None, "ALL")
-            
-            if status != "OK":
-                return {"success": False, "error": "Falha ao buscar mensagens"}
-            
-            email_ids = messages[0].split()
-            emails_list = []
-            
-            # Pega últimas 10 mensagens
-            for email_id in email_ids[-10:]:
-                status, msg_data = mail.fetch(email_id, "(RFC822)")
-                
-                if status == "OK":
-                    msg = email.message_from_bytes(msg_data[0][1])
-                    
-                    # Decodifica subject
-                    subject = decode_header(msg["Subject"])[0][0]
-                    if isinstance(subject, bytes):
-                        subject = subject.decode()
-                    
-                    # Decodifica from
-                    from_ = msg.get("From")
-                    
-                    emails_list.append({
-                        "id": email_id.decode(),
-                        "from": from_,
-                        "subject": subject,
-                        "date": msg.get("Date")
-                    })
-            
-            mail.close()
-            mail.logout()
-            
-            return {"success": True, "data": emails_list}
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def get_message(self, message_id):
-        """Lê uma mensagem específica"""
-        mail, error = self.connect()
-        if error:
-            return {"success": False, "error": f"Falha na conexão: {error}"}
-        
-        try:
-            mail.select("inbox")
-            status, msg_data = mail.fetch(message_id, "(RFC822)")
-            
-            if status != "OK":
-                return {"success": False, "error": "Mensagem não encontrada"}
-            
-            msg = email.message_from_bytes(msg_data[0][1])
-            
-            # Extrai corpo do email
-            body = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() == "text/plain":
-                        body = part.get_payload(decode=True).decode()
-                        break
-            else:
-                body = msg.get_payload(decode=True).decode()
-            
-            # Decodifica subject
-            subject = decode_header(msg["Subject"])[0][0]
-            if isinstance(subject, bytes):
-                subject = subject.decode()
-            
-            mail.close()
-            mail.logout()
-            
-            return {
-                "success": True,
-                "data": {
-                    "from": msg.get("From"),
-                    "subject": subject,
-                    "date": msg.get("Date"),
-                    "body": body
-                }
-            }
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def delete_message(self, message_id):
-        """Deleta uma mensagem"""
-        mail, error = self.connect()
-        if error:
-            return {"success": False, "error": f"Falha na conexão: {error}"}
-        
-        try:
-            mail.select("inbox")
-            mail.store(message_id, '+FLAGS', '\\Deleted')
-            mail.expunge()
-            
-            mail.close()
-            mail.logout()
-            
-            return {"success": True, "message": "Email deletado"}
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-# CONFIGURAÇÃO
+# Credenciais do Email (Hardcoded conforme solicitado)
 EMAIL_CONFIG = {
     "email": "samuelfdsafdsaf4safadsfsdafasd@gmail.com",
     "password": "wkbsannbvnyqhhmf",
@@ -173,111 +21,232 @@ EMAIL_CONFIG = {
     "imap_port": 993
 }
 
-email_api = EmailIMAPAPI(
-    EMAIL_CONFIG["email"],
-    EMAIL_CONFIG["password"],
-    EMAIL_CONFIG["imap_server"],
-    EMAIL_CONFIG["imap_port"]
-)
+# --- DECORATOR DE AUTENTICAÇÃO ---
+def require_api_key(f):
+    """Verifica se os headers x-rapidapi-key e host estão corretos."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        provided_key = request.headers.get('x-rapidapi-key')
+        provided_host = request.headers.get('x-rapidapi-host')
+        
+        if not provided_key or not provided_host:
+            return jsonify({"success": False, "error": "Headers obrigatórios ausentes"}), 401
+        
+        if provided_key != API_KEY or provided_host != API_HOST:
+            return jsonify({"success": False, "error": "Credenciais de API inválidas"}), 403
+        
+        return f(*args, **kwargs)
+    return decorated_function
 
-# ENDPOINTS
+# --- CLASSE DE GERENCIAMENTO IMAP ---
+class EmailIMAPAPI:
+    def __init__(self, email_addr, password, server, port):
+        self.email_addr = email_addr
+        self.password = password
+        self.server = server
+        self.port = port
+    
+    def connect(self):
+        """Estabelece conexão SSL com o servidor IMAP."""
+        try:
+            mail = imaplib.IMAP4_SSL(self.server, self.port)
+            mail.login(self.email_addr, self.password)
+            return mail, None
+        except Exception as e:
+            return None, str(e)
+
+    def _decode_text(self, text):
+        """Helper para decodificar assuntos e remetentes."""
+        if not text: return ""
+        decoded_list = decode_header(text)
+        decoded_text = ""
+        for content, encoding in decoded_list:
+            if isinstance(content, bytes):
+                decoded_text += content.decode(encoding or "utf-8", errors="ignore")
+            else:
+                decoded_text += str(content)
+        return decoded_text
+
+    def get_folders(self):
+        """Lista todas as pastas disponíveis na conta."""
+        mail, error = self.connect()
+        if error: return {"success": False, "error": error}
+        
+        try:
+            status, folders = mail.list()
+            folder_names = []
+            for f in folders:
+                # Parse simples para extrair o nome da pasta
+                name = f.decode().split(' "/" ')[-1].replace('"', '')
+                folder_names.append(name)
+            
+            mail.logout()
+            return {"success": True, "folders": folder_names}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_ids(self, folder="inbox", order="desc"):
+        """Retorna lista de IDs de emails."""
+        mail, error = self.connect()
+        if error: return {"success": False, "error": error}
+        
+        try:
+            status, _ = mail.select(f'"{folder}"')
+            if status != "OK": return {"success": False, "error": f"Pasta '{folder}' não encontrada"}
+            
+            status, messages = mail.search(None, "ALL")
+            ids = messages[0].split()
+            
+            if order == "desc":
+                ids.reverse() # Mais recentes primeiro
+                
+            ids_str = [i.decode() for i in ids]
+            
+            mail.close()
+            mail.logout()
+            return {"success": True, "count": len(ids_str), "ids": ids_str}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_message_content(self, message_id, folder="inbox"):
+        """Lê o conteúdo completo de um email específico."""
+        mail, error = self.connect()
+        if error: return {"success": False, "error": error}
+        
+        try:
+            # Tenta selecionar inbox primeiro, ou a pasta especificada se implementado
+            mail.select(f'"{folder}"') 
+            status, msg_data = mail.fetch(message_id, "(RFC822)")
+            
+            if status != "OK" or not msg_data or msg_data[0] is None:
+                return {"success": False, "error": "Email não encontrado ou ID inválido"}
+
+            raw_email = msg_data[0][1]
+            msg = email.message_from_bytes(raw_email)
+            
+            # Extrair corpo
+            body = ""
+            if msg.is_multipart():
+                for part in msg.walk():
+                    content_type = part.get_content_type()
+                    content_disposition = str(part.get("Content-Disposition"))
+                    if content_type == "text/plain" and "attachment" not in content_disposition:
+                        body = part.get_payload(decode=True).decode(errors="ignore")
+                        break # Prioriza text/plain
+                    elif content_type == "text/html" and not body:
+                        body = part.get_payload(decode=True).decode(errors="ignore")
+            else:
+                body = msg.get_payload(decode=True).decode(errors="ignore")
+
+            return {
+                "success": True,
+                "data": {
+                    "id": message_id,
+                    "subject": self._decode_text(msg["Subject"]),
+                    "from": self._decode_text(msg["From"]),
+                    "date": msg.get("Date"),
+                    "body": body
+                }
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def delete_message(self, message_id, folder="inbox"):
+        """Deleta um único email."""
+        mail, error = self.connect()
+        if error: return {"success": False, "error": error}
+        try:
+            mail.select(f'"{folder}"')
+            mail.store(message_id, '+FLAGS', '\\Deleted')
+            mail.expunge()
+            mail.close()
+            mail.logout()
+            return {"success": True, "message": "Email deletado"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def delete_all(self, folder="inbox"):
+        """Deleta TODOS os emails de uma pasta."""
+        mail, error = self.connect()
+        if error: return {"success": False, "error": error}
+        
+        try:
+            mail.select(f'"{folder}"')
+            status, messages = mail.search(None, "ALL")
+            email_ids = messages[0].split()
+            
+            if not email_ids:
+                return {"success": True, "message": "Pasta já está vazia"}
+            
+            # Marcação em lote
+            for e_id in email_ids:
+                mail.store(e_id, '+FLAGS', '\\Deleted')
+            
+            mail.expunge()
+            mail.close()
+            mail.logout()
+            return {"success": True, "message": f"Deletados {len(email_ids)} emails da pasta {folder}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+# Inicializa a API
+api = EmailIMAPAPI(**EMAIL_CONFIG)
+
+# --- ROTAS DA API ---
+
 @app.route('/', methods=['GET'])
 def home():
-    """Página inicial com documentação"""
     return jsonify({
-        "message": "API de Email via IMAP",
-        "endpoints": {
-            "GET /inbox": "Lista emails da inbox",
-            "GET /all": "Lista todos os emails com conteúdo completo",
-            "GET /message?id=X": "Lê email específico",
-            "GET /delete?id=X": "Deleta email"
-        },
-        "examples": {
-            "inbox": f"{request.host_url}inbox",
-            "all": f"{request.host_url}all",
-            "message": f"{request.host_url}message?id=1",
-            "delete": f"{request.host_url}delete?id=1"
-        }
-    }), 200
+        "status": "online",
+        "service": "IMAP Email API",
+        "version": "2.0"
+    })
 
-@app.route('/all', methods=['GET'])
-def get_all():
-    """Retorna todos os emails com conteúdo completo"""
-    # Primeiro pega a lista de emails
-    inbox_result = email_api.get_inbox()
-    
-    if not inbox_result.get("success"):
-        return jsonify(inbox_result), 500
-    
-    emails = inbox_result.get("data", [])
-    full_emails = []
-    
-    # Para cada email, busca o conteúdo completo
-    for email_info in emails:
-        msg_id = email_info.get("id")
-        if msg_id:
-            message_result = email_api.get_message(msg_id)
-            if message_result.get("success"):
-                full_emails.append({
-                    "id": msg_id,
-                    "preview": email_info,
-                    "full": message_result.get("data")
-                })
-            else:
-                full_emails.append({
-                    "id": msg_id,
-                    "preview": email_info,
-                    "full": None,
-                    "error": message_result.get("error")
-                })
-    
-    return jsonify({
-        "success": True,
-        "total": len(full_emails),
-        "emails": full_emails
-    }), 200
+@app.route('/folders', methods=['GET'])
+@require_api_key
+def list_folders():
+    return jsonify(api.get_folders())
 
-@app.route('/inbox', methods=['GET'])
-def inbox():
-    """Lista emails da inbox"""
-    result = email_api.get_inbox()
-    status = 200 if result.get("success") else 500
-    return jsonify(result), status
+@app.route('/ids', methods=['GET'])
+@require_api_key
+def get_ids():
+    folder = request.args.get('folder', 'inbox')
+    order = request.args.get('order', 'desc')
+    return jsonify(api.get_ids(folder, order))
+
+@app.route('/ids/latest', methods=['GET'])
+@require_api_key
+def get_latest():
+    res = api.get_ids(order="desc")
+    if res.get("success") and res.get("ids"):
+        return jsonify({"success": True, "latest_id": res["ids"][0]})
+    return jsonify({"success": False, "error": "Nenhum email encontrado"}), 404
 
 @app.route('/message', methods=['GET'])
 @require_api_key
-def message():
-    """Lê uma mensagem específica"""
-    message_id = request.args.get('id')
-    if not message_id:
-        return jsonify({"success": False, "error": "Parâmetro 'id' obrigatório"}), 400
-    
-    result = email_api.get_message(message_id)
-    status = 200 if result.get("success") else 500
-    return jsonify(result), status
+def get_message():
+    msg_id = request.args.get('id')
+    folder = request.args.get('folder', 'inbox')
+    if not msg_id: return jsonify({"error": "ID necessário"}), 400
+    return jsonify(api.get_message_content(msg_id, folder))
 
-@app.route('/delete', methods=['GET'])
+@app.route('/delete', methods=['DELETE'])
 @require_api_key
-def delete():
-    """Deleta uma mensagem"""
-    message_id = request.args.get('id')
-    if not message_id:
-        return jsonify({"success": False, "error": "Parâmetro 'id' obrigatório"}), 400
-    
-    result = email_api.delete_message(message_id)
-    status = 200 if result.get("success") else 500
-    return jsonify(result), status
+def delete_one():
+    msg_id = request.args.get('id')
+    folder = request.args.get('folder', 'inbox')
+    if not msg_id: return jsonify({"error": "ID necessário"}), 400
+    return jsonify(api.delete_message(msg_id, folder))
+
+@app.route('/delete-all', methods=['DELETE'])
+@require_api_key
+def delete_all_route():
+    folder = request.args.get('folder', 'inbox')
+    confirm = request.args.get('confirm')
+    if confirm != "true":
+        return jsonify({"error": "Confirmação necessária (?confirm=true)"}), 400
+    return jsonify(api.delete_all(folder))
 
 if __name__ == '__main__':
-    # Pega porta do ambiente (para deploy) ou usa 5000
     port = int(os.environ.get('PORT', 5000))
-    
-    print("="*70)
-    print("📧 API DE EMAIL VIA IMAP")
-    print("="*70)
-    print(f"📡 Porta: {port}")
-    print(f"📧 Email: {EMAIL_CONFIG['email']}")
-    print("="*70)
-    
-    # Para produção, use um servidor WSGI como gunicorn
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port)
